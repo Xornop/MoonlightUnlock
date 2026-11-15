@@ -1,0 +1,4 @@
+LIBRARY MoonlightUnlockCP
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow   PRIVATE
