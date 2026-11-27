@@ -116,6 +116,7 @@ The installer is built with [Inno Setup](https://jrsoftware.org/isinfo.php)
 from `installer/MoonlightUnlock.iss`:
 `ISCC /DAppVersion=1.0.0 installer\MoonlightUnlock.iss` (after building the DLL).
 
-To make a release, publish a release on GitHub with a new tag in the form
-`v1.2.3`. The workflow then builds the installer and the zip from that tag and
-attaches both to the release.
+To make a release, set the new version in the `VERSION` file (for example
+`1.0.1`) and push or merge that to `main`. The workflow then creates release
+`v1.0.1` with the installer and the zip attached. Publishing a release on
+GitHub yourself, with a new tag in the form `v1.2.3`, works too.
