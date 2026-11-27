@@ -1,20 +1,29 @@
-# Moonlight Unlock - setup (als administrator uitvoeren, TIJDENS een Moonlight-stream of met een controller aan de pc)
-# Slaat gebruikersnaam/wachtwoord en je knopcombo versleuteld op (DPAPI, machine-scope).
+# Moonlight Unlock - setup (run as administrator, DURING a Moonlight stream or with a controller connected to the PC)
+# Stores your username/password and your button combo encrypted (DPAPI, machine scope).
 param([int]$Buttons = 8)
+
+# Started without administrator rights (e.g. from the Start menu shortcut)? Restart elevated,
+# in a window that stays open so you can read the result.
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
+        '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Buttons', $Buttons)
+    return
+}
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
 
 $dir = 'C:\ProgramData\MoonlightUnlock'
 
-# Maakt de datamap veilig aan. (Deze functie staat identiek in setup.ps1 en install.ps1.)
-# In ProgramData mogen gewone gebruikers bestanden en mappen aanmaken. Daarom:
-#  - weigeren als de map een junction/symlink is of van een niet-beheerder is
-#    (een gebruiker kan hem vooraf aangemaakt hebben om er later bestanden in te lezen of te vervangen);
-#  - ACL in één keer zetten: SYSTEM en Administrators volledig, Users alleen lezen op de map zelf
-#    (niet overgeërfd). Nieuwe bestanden zoals secret.bin zijn zo vanaf het eerste moment
-#    alleen voor SYSTEM/Administrators;
-#  - daarna alles verwijderen wat niet van een beheerder is of een reparse point is.
+# Creates the data folder securely. (This function is identical in setup.ps1 and install.ps1.)
+# Standard users may create files and folders in ProgramData. Therefore:
+#  - refuse if the folder is a junction/symlink or is owned by a non-administrator
+#    (a user could have created it in advance to later read or replace files in it);
+#  - set the ACL in one go: SYSTEM and Administrators full control, Users read on the folder itself
+#    only (not inherited). New files such as secret.bin are then SYSTEM/Administrators-only
+#    from the moment they are created;
+#  - then remove anything that isn't owned by an administrator or is a reparse point.
 function Initialize-DataDir([string]$dir) {
     $sidSystem = New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'
     $sidAdmins = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
@@ -26,10 +35,10 @@ function Initialize-DataDir([string]$dir) {
     if (Test-Path -LiteralPath $dir) {
         $item = Get-Item -LiteralPath $dir -Force
         if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "$dir is geen gewone map (junction/symlink?). Verwijder het en probeer opnieuw."
+            throw "$dir is not a regular folder (junction/symlink?). Remove it and try again."
         }
         if ($trusted -notcontains (& $ownerOf $dir)) {
-            throw "$dir is aangemaakt door een andere gebruiker en is niet te vertrouwen. Verwijder de map en probeer opnieuw."
+            throw "$dir was created by another user and cannot be trusted. Remove the folder and try again."
         }
     } else {
         New-Item -ItemType Directory -Path $dir | Out-Null
@@ -48,12 +57,12 @@ function Initialize-DataDir([string]$dir) {
     foreach ($child in Get-ChildItem -LiteralPath $dir -Force) {
         $isLink = [bool]($child.Attributes -band [IO.FileAttributes]::ReparsePoint)
         if ($isLink -or $child.PSIsContainer -or ($trusted -notcontains (& $ownerOf $child.FullName))) {
-            Write-Host "Onbekend item verwijderd: $($child.FullName)"
-            if ($isLink) { $child.Delete() }                                       # alleen de link, niet het doel
-            elseif ($child.PSIsContainer) { cmd /c rmdir /s /q "`"$($child.FullName)`"" }  # volgt geen junctions
+            Write-Host "Removed unknown item: $($child.FullName)"
+            if ($isLink) { $child.Delete() }                                       # only the link, not its target
+            elseif ($child.PSIsContainer) { cmd /c rmdir /s /q "`"$($child.FullName)`"" }  # does not follow junctions
             else { Remove-Item -LiteralPath $child.FullName -Force }
         } else {
-            # Alleen nog de map-ACL erven (oudere versies gaven Users leesrechten op alles)
+            # Inherit only the folder ACL (older versions gave Users read access to everything)
             icacls $child.FullName /reset | Out-Null
             icacls $child.FullName /setowner '*S-1-5-32-544' | Out-Null
         }
@@ -85,25 +94,25 @@ function Read-Combo([int]$n) {
         if ($m -lt 0) { Start-Sleep -Milliseconds 200; continue }
         if ($prev -eq 0 -and $m -ne 0) {
             $presses += $m
-            Write-Host ("  knop {0}/{1} geregistreerd" -f $presses.Count, $n)
+            Write-Host ("  button {0}/{1} recorded" -f $presses.Count, $n)
         }
         $prev = $m
         Start-Sleep -Milliseconds 15
     }
-    # wacht tot alles losgelaten is
+    # wait until all buttons are released
     while ([XI]::Buttons() -gt 0) { Start-Sleep -Milliseconds 50 }
     return $presses
 }
 
-if ([XI]::Buttons() -lt 0) { throw 'Geen controller gevonden. Start een Moonlight-stream (of sluit een controller aan) en probeer opnieuw.' }
+if ([XI]::Buttons() -lt 0) { throw 'No controller found. Start a Moonlight stream (or connect a controller) and try again.' }
 
-$user   = Read-Host "Windows-gebruikersnaam (Enter = $env:USERNAME)"
+$user   = Read-Host "Windows username (Enter = $env:USERNAME)"
 if (-not $user) { $user = $env:USERNAME }
-$domain = Read-Host "Domein (Enter = $env:COMPUTERNAME)"
+$domain = Read-Host "Domain (Enter = $env:COMPUTERNAME)"
 if (-not $domain) { $domain = $env:COMPUTERNAME }
 
-$s1 = Read-Host 'Wachtwoord (Microsoft-account wachtwoord)' -AsSecureString
-$s2 = Read-Host 'Wachtwoord nogmaals' -AsSecureString
+$s1 = Read-Host 'Password (your Microsoft account password, not your PIN)' -AsSecureString
+$s2 = Read-Host 'Password again' -AsSecureString
 function Get-Plain([Security.SecureString]$s) {
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($s)
     try { return [Runtime.InteropServices.Marshal]::PtrToStringUni($ptr) }
@@ -111,15 +120,15 @@ function Get-Plain([Security.SecureString]$s) {
 }
 $p1 = Get-Plain $s1
 $p2 = Get-Plain $s2
-if ($p1 -ne $p2 -or -not $p1) { throw 'Wachtwoorden komen niet overeen.' }
+if ($p1 -ne $p2 -or -not $p1) { throw 'Passwords do not match.' }
 
 while ($true) {
-    Write-Host "`nDruk nu $Buttons knoppen achter elkaar (D-pad, A/B/X/Y, LB/RB, Start/Back). Druk één knop per keer."
+    Write-Host "`nNow press $Buttons buttons in a row (D-pad, A/B/X/Y, LB/RB, Start/Back), one button at a time."
     $c1 = Read-Combo $Buttons
-    Write-Host "`nHerhaal dezelfde combo ter bevestiging:"
+    Write-Host "`nRepeat the same combo to confirm:"
     $c2 = Read-Combo $Buttons
     if (($c1 -join ',') -eq ($c2 -join ',')) { break }
-    Write-Host "`nCombo's kwamen niet overeen, opnieuw."
+    Write-Host "`nThe combos did not match, try again."
 }
 $combo = ($c1 | ForEach-Object { '{0:X}' -f $_ }) -join ','
 
@@ -127,8 +136,8 @@ $text  = "$domain`n$user`n$p1`n$combo"
 $bytes = [Text.Encoding]::UTF8.GetBytes($text)
 $blob  = [Security.Cryptography.ProtectedData]::Protect($bytes, $null, [Security.Cryptography.DataProtectionScope]::LocalMachine)
 $file  = Join-Path $dir 'secret.bin'
-# De map geeft Users geen rechten op bestanden, dus het bestand is vanaf het aanmaken afgeschermd.
+# The folder gives Users no access to files, so this file is protected from the moment it is created.
 [IO.File]::WriteAllBytes($file, $blob)
 icacls $file /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
 
-Write-Host "`nKlaar. Combo en wachtwoord zijn versleuteld opgeslagen in $file"
+Write-Host "`nDone. Combo and password are stored encrypted in $file"
