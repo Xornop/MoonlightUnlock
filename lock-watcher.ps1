@@ -2,7 +2,12 @@
 # Als de pc via de combo is ontgrendeld (unlocked.flag) en er 10 s geen controller/stream meer is -> vergrendelen.
 $dir  = 'C:\ProgramData\MoonlightUnlock'
 $flag = Join-Path $dir 'unlocked.flag'
-$logf = Join-Path $dir 'watcher.log'
+# De datamap is alleen-lezen voor gewone gebruikers; de watcher logt in je eigen profiel.
+# De flag wordt door de credential provider (SYSTEM) gewist zodra het vergrendelscherm verschijnt;
+# de watcher onthoudt alleen welke flag hij al heeft afgehandeld.
+$logDir = Join-Path $env:LOCALAPPDATA 'MoonlightUnlock'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$logf = Join-Path $logDir 'watcher.log'
 function Log($m) { Add-Content -Path $logf -Value ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $m) }
 
 Add-Type -TypeDefinition @"
@@ -18,19 +23,22 @@ public static class XIW {
 
 Log 'watcher gestart'
 $noPadSince = $null
+$handled = 0   # tijdstempel van de laatst afgehandelde flag
 while ($true) {
     try {
+        $set = 0
         if (Test-Path $flag) {
-            $set = 0
             try { $set = [int64](Get-Content $flag -ErrorAction Stop) } catch {}
+        }
+        if ($set -gt $handled) {
             $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $set
             $locked = [bool](Get-Process -Name LogonUI -ErrorAction SilentlyContinue)
 
             if ($age -gt 20 -and $locked) {
                 # pc is sindsdien handmatig vergrendeld: niets meer automatisch doen
-                Remove-Item $flag -Force
+                $handled = $set
                 $noPadSince = $null
-                Log 'handmatig vergrendeld, flag gewist'
+                Log 'handmatig vergrendeld, flag genegeerd'
             }
             elseif ([XIW]::Any()) {
                 $noPadSince = $null
@@ -40,7 +48,7 @@ while ($true) {
             }
             elseif (((Get-Date) - $noPadSince).TotalSeconds -ge 10) {
                 Log 'stream weg -> vergrendelen'
-                Remove-Item $flag -Force
+                $handled = $set
                 $noPadSince = $null
                 rundll32.exe user32.dll,LockWorkStation
             }
