@@ -1,17 +1,17 @@
-# Moonlight Unlock - installeren (als administrator). Zet MoonlightUnlockCP.dll en lock-watcher.ps1 in dezelfde map.
+# Moonlight Unlock - install (run as administrator). Put MoonlightUnlockCP.dll and lock-watcher.ps1 in the same folder.
 $ErrorActionPreference = 'Stop'
 $clsid = '{7B1A3E2C-4F5D-4C8A-9E21-5A6D0B831CF4}'
 $here  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dir   = 'C:\ProgramData\MoonlightUnlock'
 
-# Maakt de datamap veilig aan. (Deze functie staat identiek in setup.ps1 en install.ps1.)
-# In ProgramData mogen gewone gebruikers bestanden en mappen aanmaken. Daarom:
-#  - weigeren als de map een junction/symlink is of van een niet-beheerder is
-#    (een gebruiker kan hem vooraf aangemaakt hebben om er later bestanden in te lezen of te vervangen);
-#  - ACL in één keer zetten: SYSTEM en Administrators volledig, Users alleen lezen op de map zelf
-#    (niet overgeërfd). Nieuwe bestanden zoals secret.bin zijn zo vanaf het eerste moment
-#    alleen voor SYSTEM/Administrators;
-#  - daarna alles verwijderen wat niet van een beheerder is of een reparse point is.
+# Creates the data folder securely. (This function is identical in setup.ps1 and install.ps1.)
+# Standard users may create files and folders in ProgramData. Therefore:
+#  - refuse if the folder is a junction/symlink or is owned by a non-administrator
+#    (a user could have created it in advance to later read or replace files in it);
+#  - set the ACL in one go: SYSTEM and Administrators full control, Users read on the folder itself
+#    only (not inherited). New files such as secret.bin are then SYSTEM/Administrators-only
+#    from the moment they are created;
+#  - then remove anything that isn't owned by an administrator or is a reparse point.
 function Initialize-DataDir([string]$dir) {
     $sidSystem = New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'
     $sidAdmins = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
@@ -23,10 +23,10 @@ function Initialize-DataDir([string]$dir) {
     if (Test-Path -LiteralPath $dir) {
         $item = Get-Item -LiteralPath $dir -Force
         if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "$dir is geen gewone map (junction/symlink?). Verwijder het en probeer opnieuw."
+            throw "$dir is not a regular folder (junction/symlink?). Remove it and try again."
         }
         if ($trusted -notcontains (& $ownerOf $dir)) {
-            throw "$dir is aangemaakt door een andere gebruiker en is niet te vertrouwen. Verwijder de map en probeer opnieuw."
+            throw "$dir was created by another user and cannot be trusted. Remove the folder and try again."
         }
     } else {
         New-Item -ItemType Directory -Path $dir | Out-Null
@@ -45,12 +45,12 @@ function Initialize-DataDir([string]$dir) {
     foreach ($child in Get-ChildItem -LiteralPath $dir -Force) {
         $isLink = [bool]($child.Attributes -band [IO.FileAttributes]::ReparsePoint)
         if ($isLink -or $child.PSIsContainer -or ($trusted -notcontains (& $ownerOf $child.FullName))) {
-            Write-Host "Onbekend item verwijderd: $($child.FullName)"
-            if ($isLink) { $child.Delete() }                                       # alleen de link, niet het doel
-            elseif ($child.PSIsContainer) { cmd /c rmdir /s /q "`"$($child.FullName)`"" }  # volgt geen junctions
+            Write-Host "Removed unknown item: $($child.FullName)"
+            if ($isLink) { $child.Delete() }                                       # only the link, not its target
+            elseif ($child.PSIsContainer) { cmd /c rmdir /s /q "`"$($child.FullName)`"" }  # does not follow junctions
             else { Remove-Item -LiteralPath $child.FullName -Force }
         } else {
-            # Alleen nog de map-ACL erven (oudere versies gaven Users leesrechten op alles)
+            # Inherit only the folder ACL (older versions gave Users read access to everything)
             icacls $child.FullName /reset | Out-Null
             icacls $child.FullName /setowner '*S-1-5-32-544' | Out-Null
         }
@@ -60,7 +60,7 @@ function Initialize-DataDir([string]$dir) {
 Initialize-DataDir $dir
 Copy-Item (Join-Path $here 'MoonlightUnlockCP.dll') "$env:windir\System32\MoonlightUnlockCP.dll" -Force
 Copy-Item (Join-Path $here 'lock-watcher.ps1') (Join-Path $dir 'lock-watcher.ps1') -Force
-# Users mogen het script lezen (de watcher draait als jij), niet wijzigen
+# Users may read the script (the watcher runs as you), not change it
 icacls (Join-Path $dir 'lock-watcher.ps1') /grant '*S-1-5-32-545:(RX)' | Out-Null
 
 $k1 = "HKLM:\SOFTWARE\Classes\CLSID\$clsid"
@@ -74,7 +74,7 @@ $k2 = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential
 New-Item -Path $k2 -Force | Out-Null
 Set-ItemProperty -Path $k2 -Name '(default)' -Value 'MoonlightUnlock'
 
-# lock-watcher: draait in jouw sessie, vergrendelt 10 s na streamverlies (alleen na combo-ontgrendeling)
+# lock-watcher: runs in your session, locks 10 s after the stream is lost (only after a combo unlock)
 $me   = "$env:USERDOMAIN\$env:USERNAME"
 $act  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dir\lock-watcher.ps1`""
 $trg  = New-ScheduledTaskTrigger -AtLogOn -User $me
@@ -83,4 +83,4 @@ $set  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -All
 Register-ScheduledTask -TaskName 'MoonlightUnlockWatcher' -Action $act -Trigger $trg -Principal $prn -Settings $set -Force | Out-Null
 Start-ScheduledTask -TaskName 'MoonlightUnlockWatcher'
 
-Write-Host 'Geïnstalleerd. Noodroute: Veilige modus laadt de provider niet; of verwijder de registersleutel onder Credential Providers.'
+Write-Host 'Installed. Emergency route: Safe Mode does not load the provider; or delete its registry key under Credential Providers.'

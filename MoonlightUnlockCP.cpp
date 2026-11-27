@@ -1,6 +1,6 @@
 // Moonlight Unlock - Windows Credential Provider
-// Leest de controller (XInput) op het vergrendel-/loginscherm. Bij de juiste knopcombo
-// (binnen 10 s) en een actieve controller (= Moonlight-stream) logt hij automatisch in/ontgrendelt hij.
+// Reads the controller (XInput) on the lock/sign-in screen. With the right button combo
+// (within 10 s) and an active controller (= Moonlight stream) it signs in/unlocks automatically.
 
 #define WIN32_NO_STATUS
 #include <windows.h>
@@ -27,18 +27,18 @@ static const wchar_t* kDataDir   = L"C:\\ProgramData\\MoonlightUnlock";
 static const wchar_t* kSecret    = L"C:\\ProgramData\\MoonlightUnlock\\secret.bin";
 static const wchar_t* kFlag      = L"C:\\ProgramData\\MoonlightUnlock\\unlocked.flag";
 static const wchar_t* kLog       = L"C:\\ProgramData\\MoonlightUnlock\\cp.log";
-static const DWORD    kWindowMs  = 10000;   // eerste tot laatste knop
+static const DWORD    kWindowMs  = 10000;   // first to last button
 
 static LONG      g_cRef  = 0;
 static HINSTANCE g_hinst = nullptr;
-static volatile LONG g_unlock = 0;          // 1 = combo herkend, wacht op serialization
+static volatile LONG g_unlock = 0;          // 1 = combo recognised, waiting for serialization
 
-// ---------------------------------------------------------------- beveiligde bestanden
-// Alles in kDataDir mag alleen door SYSTEM en Administrators geschreven worden. Gewone gebruikers
-// mogen de map alleen lezen (niet overgeërfd), zodat ze geen bestanden kunnen neerzetten of
-// vervangen die deze DLL (als SYSTEM) opent, en secret.bin niet kunnen lezen.
+// ---------------------------------------------------------------- protected files
+// Only SYSTEM and Administrators may write anything in kDataDir. Standard users may only read
+// the folder itself (not inherited), so they can't plant or replace files that this DLL opens
+// (as SYSTEM), and can't read secret.bin.
 static const wchar_t* kDirSddl  = L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1200a9;;;BU)";
-// De flag moet door de lock-watcher (jouw gebruiker) gelezen kunnen worden.
+// The lock-watcher (running as your user) must be able to read the flag.
 static const wchar_t* kFlagSddl = L"O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)";
 
 struct SecAttr {
@@ -52,8 +52,8 @@ struct SecAttr {
     bool ok() const { return sa.lpSecurityDescriptor != nullptr; }
 };
 
-// Maakt de map alleen aan als hij nog niet bestaat, en dan meteen met de juiste ACL
-// (nooit met de standaard ProgramData-rechten, waarmee Users bestanden kunnen aanmaken).
+// Creates the folder only if it doesn't exist yet, and then right away with the correct ACL
+// (never with the default ProgramData permissions, which let Users create files).
 static void EnsureDataDir()
 {
     if (GetFileAttributesW(kDataDir) != INVALID_FILE_ATTRIBUTES) return;
@@ -83,7 +83,7 @@ static void Log(const char* fmt, ...)
     CloseHandle(h);
 }
 
-// ---------------------------------------------------------------- XInput (dynamisch geladen)
+// ---------------------------------------------------------------- XInput (loaded dynamically)
 typedef DWORD (WINAPI* PFN_GetState)(DWORD, XINPUT_STATE*);
 static PFN_GetState g_getState = nullptr;
 
@@ -93,10 +93,10 @@ static void LoadXInput()
     HMODULE m = LoadLibraryW(L"xinput1_4.dll");
     if (!m) m = LoadLibraryW(L"xinput9_1_0.dll");
     if (m) g_getState = (PFN_GetState)GetProcAddress(m, "XInputGetState");
-    if (!g_getState) Log("XInput niet beschikbaar");
+    if (!g_getState) Log("XInput not available");
 }
 
-// Geeft true als er een controller is; mask = OR van alle ingedrukte knoppen
+// Returns true if a controller is present; mask = OR of all pressed buttons
 static bool ReadPads(WORD* mask)
 {
     *mask = 0;
@@ -112,7 +112,7 @@ static bool ReadPads(WORD* mask)
     return any;
 }
 
-// ---------------------------------------------------------------- configuratie (DPAPI, machine-scope)
+// ---------------------------------------------------------------- configuration (DPAPI, machine scope)
 struct Config {
     std::wstring domain, user, password;
     std::vector<WORD> combo;
@@ -135,18 +135,18 @@ static bool ReadAll(const wchar_t* path, std::vector<BYTE>& out)
 static bool LoadConfig(Config& c)
 {
     std::vector<BYTE> blob;
-    if (!ReadAll(kSecret, blob)) { Log("secret.bin niet leesbaar"); return false; }
+    if (!ReadAll(kSecret, blob)) { Log("secret.bin not readable"); return false; }
 
     DATA_BLOB in = { (DWORD)blob.size(), blob.data() }, out = {};
     if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) {
-        Log("CryptUnprotectData mislukt (%lu)", GetLastError());
+        Log("CryptUnprotectData failed (%lu)", GetLastError());
         return false;
     }
     std::string text((char*)out.pbData, out.cbData);
     SecureZeroMemory(out.pbData, out.cbData);
     LocalFree(out.pbData);
 
-    // regels: domein, gebruiker, wachtwoord, combo (hex, komma-gescheiden)
+    // lines: domain, user, password, combo (hex, comma-separated)
     std::vector<std::string> lines;
     size_t pos = 0;
     while (pos <= text.size()) {
@@ -158,7 +158,7 @@ static bool LoadConfig(Config& c)
         pos = e + 1;
     }
     SecureZeroMemory(&text[0], text.size());
-    if (lines.size() < 4) { Log("secret.bin heeft onverwacht formaat"); return false; }
+    if (lines.size() < 4) { Log("secret.bin has an unexpected format"); return false; }
 
     auto wide = [](const std::string& s) {
         if (s.empty()) return std::wstring();
@@ -181,7 +181,7 @@ static bool LoadConfig(Config& c)
         c.combo.push_back((WORD)strtoul(cs.substr(p, e - p).c_str(), nullptr, 16));
         p = e + 1;
     }
-    if (c.combo.size() < 4) { Log("combo ongeldig/te kort"); return false; }
+    if (c.combo.size() < 4) { Log("combo invalid/too short"); return false; }
     return true;
 }
 
@@ -191,7 +191,7 @@ static void WipeConfig(Config& c)
     c.password.clear();
 }
 
-// ---------------------------------------------------------------- flag voor de lock-watcher
+// ---------------------------------------------------------------- flag for the lock-watcher
 static void ClearFlag()
 {
     DeleteFileW(kFlag);
@@ -199,7 +199,7 @@ static void ClearFlag()
 
 static void WriteFlag()
 {
-    // Altijd een nieuw bestand, zodat de ACL hieronder geldt (CREATE_ALWAYS houdt een oude ACL aan).
+    // Always a new file, so the ACL below applies (CREATE_ALWAYS would keep an old ACL).
     ClearFlag();
     SecAttr sa(kFlagSddl);
     if (!sa.ok()) return;
@@ -229,7 +229,7 @@ static HRESULT PackCredentials(const Config& c, CREDENTIAL_PROVIDER_USAGE_SCENAR
     BYTE* cur = pb + sizeof(KERB_INTERACTIVE_UNLOCK_LOGON);
     auto put = [&](UNICODE_STRING& us, const std::wstring& s) {
         us.Length = us.MaximumLength = (USHORT)(s.size() * sizeof(WCHAR));
-        us.Buffer = (PWSTR)(ULONG_PTR)(cur - pb);          // offset t.o.v. begin van de structuur
+        us.Buffer = (PWSTR)(ULONG_PTR)(cur - pb);          // offset from the start of the structure
         if (!s.empty()) memcpy(cur, s.data(), us.Length);
         cur += us.Length;
     };
@@ -293,7 +293,7 @@ public:
     }
     IFACEMETHODIMP GetStringValue(DWORD dwFieldID, PWSTR* ppsz)
     {
-        if (dwFieldID == 0) return SHStrDupW(L"Moonlight: voer je knopcombo in", ppsz);
+        if (dwFieldID == 0) return SHStrDupW(L"Moonlight: enter your button combo", ppsz);
         return E_INVALIDARG;
     }
     IFACEMETHODIMP GetBitmapValue(DWORD, HBITMAP*) { return E_NOTIMPL; }
@@ -362,7 +362,7 @@ public:
         if (cpus != CPUS_LOGON && cpus != CPUS_UNLOCK_WORKSTATION) return E_NOTIMPL;
         _cpus = cpus;
         InterlockedExchange(&g_unlock, 0);
-        // Het vergrendel-/loginscherm is in beeld: een eerdere combo-ontgrendeling is voorbij.
+        // The lock/sign-in screen is showing: any earlier combo unlock is over.
         ClearFlag();
         LoadXInput();
         StartThread();
@@ -394,7 +394,7 @@ public:
         ZeroMemory(d, sizeof(*d));
         d->dwFieldID = dwIndex;
         d->cpft = (dwIndex == 0) ? CPFT_LARGE_TEXT : CPFT_SUBMIT_BUTTON;
-        HRESULT hr = SHStrDupW(dwIndex == 0 ? L"Moonlight" : L"Ontgrendel", &d->pszLabel);
+        HRESULT hr = SHStrDupW(dwIndex == 0 ? L"Moonlight" : L"Unlock", &d->pszLabel);
         if (FAILED(hr)) { CoTaskMemFree(d); return hr; }
         *ppcpfd = d;
         return S_OK;
@@ -439,10 +439,10 @@ private:
     void Run()
     {
         Config cfg;
-        if (!LoadConfig(cfg)) { Log("combo-thread stopt: geen configuratie"); return; }
+        if (!LoadConfig(cfg)) { Log("combo thread stopping: no configuration"); return; }
         std::vector<WORD> combo = cfg.combo;
         WipeConfig(cfg);
-        Log("combo-thread gestart (%u knoppen)", (unsigned)combo.size());
+        Log("combo thread started (%u buttons)", (unsigned)combo.size());
 
         struct Press { DWORD t; WORD m; };
         std::deque<Press> presses;
@@ -463,7 +463,7 @@ private:
                     for (size_t i = 0; i < combo.size(); i++)
                         if (presses[i].m != combo[i]) { ok = false; break; }
                     if (ok) {
-                        Log("combo herkend");
+                        Log("combo recognised");
                         presses.clear();
                         InterlockedExchange(&g_unlock, 1);
                         EnterCriticalSection(&_cs);
@@ -507,7 +507,7 @@ IFACEMETHODIMP CCredential::GetSerialization(CREDENTIAL_PROVIDER_GET_SERIALIZATI
     WipeConfig(cfg);
     if (SUCCEEDED(hr)) hr = NegotiatePackage(&pkg);
     if (FAILED(hr)) {
-        Log("serialization mislukt hr=0x%08lx", (unsigned long)hr);
+        Log("serialization failed hr=0x%08lx", (unsigned long)hr);
         if (pb) CoTaskMemFree(pb);
         InterlockedExchange(&g_unlock, 0);
         return S_OK;
@@ -521,7 +521,7 @@ IFACEMETHODIMP CCredential::GetSerialization(CREDENTIAL_PROVIDER_GET_SERIALIZATI
 
     WriteFlag();
     InterlockedExchange(&g_unlock, 0);
-    Log("ontgrendeling doorgegeven aan Windows");
+    Log("unlock passed to Windows");
     return S_OK;
 }
 

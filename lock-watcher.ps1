@@ -1,10 +1,10 @@
-# Moonlight Unlock - lock-watcher (draait in jouw gebruikerssessie)
-# Als de pc via de combo is ontgrendeld (unlocked.flag) en er 10 s geen controller/stream meer is -> vergrendelen.
+# Moonlight Unlock - lock-watcher (runs in your user session)
+# If the PC was unlocked with the combo (unlocked.flag) and there has been no controller/stream for 10 s -> lock.
 $dir  = 'C:\ProgramData\MoonlightUnlock'
 $flag = Join-Path $dir 'unlocked.flag'
-# De datamap is alleen-lezen voor gewone gebruikers; de watcher logt in je eigen profiel.
-# De flag wordt door de credential provider (SYSTEM) gewist zodra het vergrendelscherm verschijnt;
-# de watcher onthoudt alleen welke flag hij al heeft afgehandeld.
+# The data folder is read-only for standard users; the watcher logs to your own profile.
+# The credential provider (SYSTEM) deletes the flag as soon as the lock screen appears;
+# the watcher only remembers which flag it has already handled.
 $logDir = Join-Path $env:LOCALAPPDATA 'MoonlightUnlock'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logf = Join-Path $logDir 'watcher.log'
@@ -21,9 +21,9 @@ public static class XIW {
 }
 "@
 
-Log 'watcher gestart'
+Log 'watcher started'
 $noPadSince = $null
-$handled = 0   # tijdstempel van de laatst afgehandelde flag
+$handled = 0   # timestamp of the last flag that was handled
 while ($true) {
     try {
         $set = 0
@@ -35,10 +35,10 @@ while ($true) {
             $locked = [bool](Get-Process -Name LogonUI -ErrorAction SilentlyContinue)
 
             if ($age -gt 20 -and $locked) {
-                # pc is sindsdien handmatig vergrendeld: niets meer automatisch doen
+                # the PC has been locked manually since: stop doing anything automatically
                 $handled = $set
                 $noPadSince = $null
-                Log 'handmatig vergrendeld, flag genegeerd'
+                Log 'locked manually, flag ignored'
             }
             elseif ([XIW]::Any()) {
                 $noPadSince = $null
@@ -47,7 +47,7 @@ while ($true) {
                 $noPadSince = Get-Date
             }
             elseif (((Get-Date) - $noPadSince).TotalSeconds -ge 10) {
-                Log 'stream weg -> vergrendelen'
+                Log 'stream gone -> locking'
                 $handled = $set
                 $noPadSince = $null
                 rundll32.exe user32.dll,LockWorkStation
@@ -55,6 +55,6 @@ while ($true) {
         } else {
             $noPadSince = $null
         }
-    } catch { Log "fout: $_" }
+    } catch { Log "error: $_" }
     Start-Sleep -Milliseconds 500
 }
