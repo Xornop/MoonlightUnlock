@@ -2,14 +2,23 @@ name: build
 on:
   push:
   workflow_dispatch:
+
+# The token can only read; this workflow only builds and uploads an artifact.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to a full commit SHA (a tag can be moved to other code);
+      # Dependabot keeps these up to date (.github/dependabot.yml).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: cmake -B build -A x64
       - run: cmake --build build --config Release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: MoonlightUnlockCP
           path: build/Release/MoonlightUnlockCP.dll
