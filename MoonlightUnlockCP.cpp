@@ -11,6 +11,7 @@
 #include <credentialprovider.h>
 #include <shlwapi.h>
 #include <wincrypt.h>
+#include <sddl.h>
 #include <xinput.h>
 #include <string>
 #include <vector>
@@ -32,6 +33,34 @@ static LONG      g_cRef  = 0;
 static HINSTANCE g_hinst = nullptr;
 static volatile LONG g_unlock = 0;          // 1 = combo herkend, wacht op serialization
 
+// ---------------------------------------------------------------- beveiligde bestanden
+// Alles in kDataDir mag alleen door SYSTEM en Administrators geschreven worden. Gewone gebruikers
+// mogen de map alleen lezen (niet overgeërfd), zodat ze geen bestanden kunnen neerzetten of
+// vervangen die deze DLL (als SYSTEM) opent, en secret.bin niet kunnen lezen.
+static const wchar_t* kDirSddl  = L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1200a9;;;BU)";
+// De flag moet door de lock-watcher (jouw gebruiker) gelezen kunnen worden.
+static const wchar_t* kFlagSddl = L"O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)";
+
+struct SecAttr {
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), nullptr, FALSE };
+    explicit SecAttr(const wchar_t* sddl)
+    {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sa.lpSecurityDescriptor, nullptr))
+            sa.lpSecurityDescriptor = nullptr;
+    }
+    ~SecAttr() { if (sa.lpSecurityDescriptor) LocalFree(sa.lpSecurityDescriptor); }
+    bool ok() const { return sa.lpSecurityDescriptor != nullptr; }
+};
+
+// Maakt de map alleen aan als hij nog niet bestaat, en dan meteen met de juiste ACL
+// (nooit met de standaard ProgramData-rechten, waarmee Users bestanden kunnen aanmaken).
+static void EnsureDataDir()
+{
+    if (GetFileAttributesW(kDataDir) != INVALID_FILE_ATTRIBUTES) return;
+    SecAttr sa(kDirSddl);
+    if (sa.ok()) CreateDirectoryW(kDataDir, &sa.sa);
+}
+
 // ---------------------------------------------------------------- logging
 static void Log(const char* fmt, ...)
 {
@@ -46,7 +75,7 @@ static void Log(const char* fmt, ...)
     int n = _snprintf(line, sizeof(line) - 1, "%04d-%02d-%02d %02d:%02d:%02d.%03d %s\r\n",
                       st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, msg);
     if (n <= 0) return;
-    CreateDirectoryW(kDataDir, nullptr);
+    EnsureDataDir();
     HANDLE h = CreateFileW(kLog, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
@@ -163,9 +192,18 @@ static void WipeConfig(Config& c)
 }
 
 // ---------------------------------------------------------------- flag voor de lock-watcher
+static void ClearFlag()
+{
+    DeleteFileW(kFlag);
+}
+
 static void WriteFlag()
 {
-    HANDLE h = CreateFileW(kFlag, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Altijd een nieuw bestand, zodat de ACL hieronder geldt (CREATE_ALWAYS houdt een oude ACL aan).
+    ClearFlag();
+    SecAttr sa(kFlagSddl);
+    if (!sa.ok()) return;
+    HANDLE h = CreateFileW(kFlag, GENERIC_WRITE, FILE_SHARE_READ, &sa.sa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     char buf[32];
     int n = _snprintf(buf, sizeof(buf) - 1, "%lld", (long long)time(nullptr));
@@ -324,6 +362,8 @@ public:
         if (cpus != CPUS_LOGON && cpus != CPUS_UNLOCK_WORKSTATION) return E_NOTIMPL;
         _cpus = cpus;
         InterlockedExchange(&g_unlock, 0);
+        // Het vergrendel-/loginscherm is in beeld: een eerdere combo-ontgrendeling is voorbij.
+        ClearFlag();
         LoadXInput();
         StartThread();
         Log("SetUsageScenario %d", (int)cpus);
