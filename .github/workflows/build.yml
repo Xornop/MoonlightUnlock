@@ -3,7 +3,7 @@ on:
   push:
   workflow_dispatch:
 
-# The token can only read; this workflow only builds and uploads an artifact.
+# Default: the token can only read. Only the release job below may write.
 permissions:
   contents: read
 
@@ -22,3 +22,32 @@ jobs:
         with:
           name: MoonlightUnlockCP
           path: build/Release/MoonlightUnlockCP.dll
+      # Release package: the DLL plus the scripts and README in one flat folder,
+      # so install.ps1 finds MoonlightUnlockCP.dll and lock-watcher.ps1 next to itself.
+      - if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item build/Release/MoonlightUnlockCP.dll, install.ps1, setup.ps1, uninstall.ps1, lock-watcher.ps1, README.md package/
+          Compress-Archive -Path package/* -DestinationPath MoonlightUnlock-${{ github.ref_name }}.zip
+      - if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-zip
+          path: MoonlightUnlock-${{ github.ref_name }}.zip
+
+  # Only runs for a pushed tag starting with v (e.g. v1.0.0); only this job may write.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-zip
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          generate_release_notes: true
+          files: MoonlightUnlock-${{ github.ref_name }}.zip
